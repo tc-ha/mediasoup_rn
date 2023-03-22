@@ -1,8 +1,9 @@
 import RemoteVideo from './RemoteVideo';
 import React, {useState, useEffect} from 'react';
-import {StyleSheet, Text, View} from 'react-native';
+import {Text, View} from 'react-native';
 import {RTCView, mediaDevices, registerGlobals} from 'react-native-webrtc';
 import {socket} from './socket';
+import {styles} from './styles';
 
 const roomName = 'room1';
 
@@ -50,11 +51,6 @@ const App = () => {
   let videoParams = {params};
   let consumingTransports = [];
 
-  const handleConnectionSuccess = ({socketId}) => {
-    console.log('Received connection-success event with socketId: ', socketId);
-    getLocalVideo();
-  };
-
   useEffect(() => {
     socket.on('connect', () => {
       console.log('Connected to server!');
@@ -66,10 +62,62 @@ const App = () => {
 
     socket.on('connection-success', handleConnectionSuccess);
 
+    // server informs the client of a new producer just joined
+    socket.on('new-producer', handleNewProducer);
+
+    socket.on('producer-closed', handleProducerClosed);
+
     return () => {
       socket.disconnect();
     };
   }, []);
+
+  const handleConnectionSuccess = ({socketId}) => {
+    console.log('Received connection-success event with socketId: ', socketId);
+    getLocalVideo();
+  };
+
+  const handleNewProducer = ({producerId}) => {
+    signalNewConsumerTransport(producerId);
+  };
+
+  const handleProducerClosed = ({remoteProducerId}) => {
+    // server notification is received when a producer is closed
+    // we need to close the client-side consumer and associated transport
+    const producerToClose = consumerTransports.find(
+      transportData => transportData.producerId === remoteProducerId,
+    );
+    producerToClose.consumerTransport.close();
+    producerToClose.consumer.close();
+
+    // remove the consumer transport from the list
+    consumerTransports = consumerTransports.filter(
+      transportData => transportData.producerId !== remoteProducerId,
+    );
+
+    // remove the video div elemnt
+    setVideos(videos =>
+      videos.filter(video => video.props.remoteProducerId !== remoteProducerId),
+    );
+  };
+
+  const getLocalVideo = async () => {
+    const stream = await mediaDevices
+      .getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            minWidth: 100, // Provide your own width, height and frame rate here
+            minHeight: 200,
+            minFrameRate: 30,
+          },
+          facingMode: 'environment', // 'user'
+          optional: [],
+        },
+      })
+      .then(streamSuccess)
+      .catch(e => console.log(e));
+  };
 
   const streamSuccess = async stream => {
     setLocalStream(stream);
@@ -93,24 +141,6 @@ const App = () => {
       // once we have rtpCapabilities from the Router, create Device
       createDevice();
     });
-  };
-
-  const getLocalVideo = async () => {
-    const stream = await mediaDevices
-      .getUserMedia({
-        audio: false,
-        video: {
-          mandatory: {
-            minWidth: 100, // Provide your own width, height and frame rate here
-            minHeight: 200,
-            minFrameRate: 30,
-          },
-          facingMode: 'environment', // 'user'
-          optional: [],
-        },
-      })
-      .then(streamSuccess)
-      .catch(e => console.log(e));
   };
 
   const createDevice = async () => {
@@ -209,6 +239,15 @@ const App = () => {
     });
   };
 
+  const getProducers = () => {
+    socket.emit('getProducers', producerIds => {
+      // for each of the producer, create a consumer
+      // producerIds.forEach(id => signalNewConsumerTransport(id))
+      // signalNewConsumerTransport == createRecvTransport
+      producerIds.forEach(signalNewConsumerTransport);
+    });
+  };
+
   const connectSendTransport = async () => {
     // we now call produce() to instruct the producer transport
     // to send media to the Router
@@ -278,20 +317,6 @@ const App = () => {
     });
   };
 
-  // server informs the client of a new producer just joined
-  socket.on('new-producer', ({producerId}) =>
-    signalNewConsumerTransport(producerId),
-  );
-
-  const getProducers = () => {
-    socket.emit('getProducers', producerIds => {
-      // for each of the producer, create a consumer
-      // producerIds.forEach(id => signalNewConsumerTransport(id))
-      // signalNewConsumerTransport == createRecvTransport
-      producerIds.forEach(signalNewConsumerTransport);
-    });
-  };
-
   const connectRecvTransport = async (
     consumerTransport,
     remoteProducerId,
@@ -354,26 +379,6 @@ const App = () => {
     );
   };
 
-  socket.on('producer-closed', ({remoteProducerId}) => {
-    // server notification is received when a producer is closed
-    // we need to close the client-side consumer and associated transport
-    const producerToClose = consumerTransports.find(
-      transportData => transportData.producerId === remoteProducerId,
-    );
-    producerToClose.consumerTransport.close();
-    producerToClose.consumer.close();
-
-    // remove the consumer transport from the list
-    consumerTransports = consumerTransports.filter(
-      transportData => transportData.producerId !== remoteProducerId,
-    );
-
-    // remove the video div elemnt
-    setVideos(videos =>
-      videos.filter(video => video.props.remoteProducerId !== remoteProducerId),
-    );
-  });
-
   return (
     <View style={styles.container}>
       <View>
@@ -392,35 +397,5 @@ const App = () => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  videoContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  video: {
-    width: 360,
-    height: 240,
-  },
-  sharedBtns: {
-    padding: 5,
-    backgroundColor: 'papayawhip',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-
-  rtcView: {
-    width: 100, //dimensions.width,
-    height: 200, //dimensions.height / 2,
-    backgroundColor: 'black',
-  },
-});
 
 export default App;
